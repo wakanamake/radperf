@@ -36,16 +36,16 @@ func main() {
 
 	// Define the flags
 	flag.IntVar(&numPackets, "n", 1, "Number of packets to send")
-	flag.StringVar(&secret, "s", "secret", "RADIUS secret")
-	flag.StringVar(&ip, "i", "192.168.0.1", "Client IP address with prefix size (CIDR notation)")
 	flag.IntVar(&rate, "r", 1, "Rate of packet transmission (packets per second)")
 	flag.StringVar(&destIP, "d", "127.0.0.1", "Destination IP address")
-	flag.StringVar(&servicePlan, "sp", "Default Service Plan", "Service Plan name")
 	flag.IntVar(&destPort, "p", 1813, "Destination UDP port")
-	flag.IntVar(&msisdn, "m", 12345678, "MSISDN value")
+	flag.StringVar(&secret, "s", "secret", "RADIUS secret")
+	flag.StringVar(&ip, "i", "192.168.0.1", "Client IP address (Framed-IP-Address Attribute)")
+	flag.StringVar(&servicePlan, "sp", "Default Service Plan", "Service Plan name (Class Attribute)")
+	flag.IntVar(&msisdn, "m", 12345678, "MSISDN (Calling-Station-Id Attribute)")
 	flag.StringVar(&usernamePrefix, "user", "HOGE", "Username prefix")
-	flag.BoolVar(&start, "start", false, "Allow to send Accounting START message")
-	flag.BoolVar(&stop, "stop", false, "Allow to send Accounting STOP message")
+	flag.BoolVar(&start, "start", false, "Send Accounting START message")
+	flag.BoolVar(&stop, "stop", false, "Send Accounting STOP message")
 
 	// Define custom usage message
 	flag.Usage = func() {
