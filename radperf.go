@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/big"
 	"math/rand"
 	"net"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
+	"layeh.com/radius/rfc3162"
 )
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -24,6 +26,7 @@ func main() {
 		numPackets     int
 		secret         string
 		ip             string
+		ip6prefix      string
 		rate           int
 		destIP         string
 		destPort       int
@@ -32,6 +35,7 @@ func main() {
 		start          bool
 		stop           bool
 		servicePlan    string
+		sessionId      string
 	)
 
 	// Define the flags
@@ -41,7 +45,9 @@ func main() {
 	flag.IntVar(&destPort, "p", 1813, "Destination UDP port")
 	flag.StringVar(&secret, "s", "secret", "RADIUS secret")
 	flag.StringVar(&ip, "i", "192.168.0.1", "Client IP address (Framed-IP-Address Attribute)")
+	flag.StringVar(&ip6prefix, "i6", "fec0::/64", "Client IPv6 prefix (Framed-IPv6-Prefix Attribute)")
 	flag.StringVar(&servicePlan, "sp", "Default Service Plan", "Service Plan name (Class Attribute)")
+	flag.StringVar(&sessionId, "sid", "", "Session ID prefix (Default: random strings)")
 	flag.IntVar(&msisdn, "m", 12345678, "MSISDN (Calling-Station-Id Attribute)")
 	flag.StringVar(&usernamePrefix, "user", "HOGE", "Username prefix")
 	flag.BoolVar(&start, "start", false, "Send Accounting START message")
@@ -63,6 +69,16 @@ func main() {
 	if flag.NFlag() == 0 {
 		flag.Usage()
 		return
+	}
+
+	var ip6Net *net.IPNet
+
+	if ip6prefix != "" {
+		_, ipNet, err := net.ParseCIDR(ip6prefix)
+		if err != nil {
+			return
+		}
+		ip6Net = ipNet
 	}
 
 	if !start && !stop {
@@ -100,7 +116,14 @@ func main() {
 	defer conn.Close()
 
 	id := 0
-	sessionIDPrefix := GenerateRandomString(6)
+
+	var sessionIDPrefix string
+
+	if sessionId == "" {
+		sessionIDPrefix = GenerateRandomString(6)
+	} else {
+		sessionIDPrefix = sessionId
+	}
 
 	for i := 0; i < numPackets; i++ {
 		packet := radius.New(radius.CodeAccountingRequest, []byte(secret))
@@ -110,6 +133,7 @@ func main() {
 		rfc2865.UserName_SetString(packet, username)
 		rfc2866.AcctSessionID_SetString(packet, sessionID)
 		rfc2865.FramedIPAddress_Add(packet, net.IP(startIP.AsSlice()))
+		rfc3162.FramedIPv6Prefix_Add(packet, ip6Net)
 		rfc2865.CallingStationID_SetString(packet, strconv.Itoa(msisdn))
 		rfc2865.Class_SetString(packet, servicePlan)
 
@@ -123,6 +147,7 @@ func main() {
 		id++
 		msisdn++
 		startIP = startIP.Next()
+		ip6Net = incrementIPv6Prefix(ip6Net)
 	}
 
 	fmt.Println("RADIUS Accounting Start messages sent.")
@@ -149,4 +174,27 @@ func sendUDPPacket(conn *net.UDPConn, packet *radius.Packet) {
 	if err != nil {
 		log.Fatalf("Error writing: %v", err)
 	}
+}
+
+func incrementIPv6Prefix(ip6 *net.IPNet) *net.IPNet {
+	ip := ip6.IP
+	prefixSize, _ := ip6.Mask.Size()
+
+	// Convert the IPv6 to a big integer.
+	ipInt := big.NewInt(0)
+	ipInt.SetBytes(ip.To16())
+
+	// Calculate the number of bits to shift based on the prefix length.
+	shiftBits := 128 - prefixSize
+
+	// Create the increment value.
+	increment := big.NewInt(1)
+	increment.Lsh(increment, uint(shiftBits))
+
+	// Add the increment to the big integer.
+	ipInt.Add(ipInt, increment)
+
+	_, netIP, _ := net.ParseCIDR(net.IP(ipInt.Bytes()).String() + fmt.Sprintf("/%d", prefixSize))
+
+	return netIP
 }
