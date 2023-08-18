@@ -24,6 +24,8 @@ var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 type Config struct {
 	NumPackets      int
 	Secret          string
+	Server          netip.Addr
+	DstPort         int
 	IP4Addr         netip.Addr
 	IP6Net          netip.Prefix
 	Rate            int
@@ -36,21 +38,21 @@ type Config struct {
 
 func main() {
 	var (
-		ip4       string
-		ip6       string
-		start     bool
-		stop      bool
-		sessionId string
-		destIP    string
-		destPort  int
-		config    Config
+		ip4           string
+		ip6           string
+		start         bool
+		stop          bool
+		sessionId     string
+		destinationIP string
+		config        Config
+		threading     bool
 	)
 
 	// Define the flags
 	flag.IntVar(&config.NumPackets, "n", 1, "Number of packets to send")
 	flag.IntVar(&config.Rate, "r", 1, "Rate of packet transmission (packets per second)")
-	flag.StringVar(&destIP, "d", "127.0.0.1", "Destination IP address")
-	flag.IntVar(&destPort, "p", 1813, "Destination UDP port")
+	flag.StringVar(&destinationIP, "d", "127.0.0.1", "Destination IP address")
+	flag.IntVar(&config.DstPort, "p", 1813, "Destination UDP port")
 	flag.StringVar(&config.Secret, "s", "secret", "RADIUS secret")
 	flag.StringVar(&ip4, "i", "", "Client IP address (Framed-IP-Address Attribute)")
 	flag.StringVar(&ip6, "i6", "", "Client IPv6 prefix (Framed-IPv6-Prefix Attribute)")
@@ -60,6 +62,7 @@ func main() {
 	flag.StringVar(&config.UsernamePrefix, "user", "HOGE", "Username prefix")
 	flag.BoolVar(&start, "start", false, "Send Accounting START message")
 	flag.BoolVar(&stop, "stop", false, "Send Accounting STOP message")
+	flag.BoolVar(&threading, "th", false, "Send packets in thread. Must specify both IPv4 address and IPv6 prefix.")
 
 	// Define custom usage message
 	flag.Usage = func() {
@@ -81,6 +84,11 @@ func main() {
 
 	if ip4 == "" && ip6 == "" {
 		fmt.Println("Error: Either IPv4 or IPv6 address must be specified.")
+		return
+	}
+
+	if threading && (ip4 == "" || ip6 == "") {
+		fmt.Println("Error: Both IPv4 and IPv6 address must be specified.")
 		return
 	}
 
@@ -114,16 +122,66 @@ func main() {
 		config.accttype = rfc2866.AcctStatusType_Value_Stop
 	}
 
-	serverIP, err := netip.ParseAddr(destIP)
+	server, err := netip.ParseAddr(destinationIP)
 	if err != nil {
-		fmt.Printf("Could not parse IP address: %s\n", destIP)
+		fmt.Printf("Could not parse IP address: %s\n", destinationIP)
 		return
 	}
+	config.Server = server
 
+	if sessionId == "" {
+		config.SessionIDPrefix = GenerateRandomString(6)
+	} else {
+		config.SessionIDPrefix = sessionId
+	}
+	if !threading {
+		sendRADIUSmessages(config)
+	} else {
+		config1 := config
+
+		var blankAddr netip.Addr
+		config1.IP4Addr = blankAddr
+
+		intval, _ := strconv.Atoi(fmt.Sprintf("4%d", config.MSISDN))
+		config1.MSISDN = intval
+
+		config1.UsernamePrefix = "4" + config.UsernamePrefix
+
+		config2 := config
+
+		var blankPrefix netip.Prefix
+		config2.IP6Net = blankPrefix
+
+		intval, _ = strconv.Atoi(fmt.Sprintf("6%d", config.MSISDN))
+		config2.MSISDN = intval
+
+		config2.UsernamePrefix = "6" + config.UsernamePrefix
+
+		// Create a channel to wait for both routines to finish
+		done := make(chan bool, 2)
+
+		go func() {
+			sendRADIUSmessages(config1)
+			done <- true
+		}()
+
+		go func() {
+			sendRADIUSmessages(config2)
+			done <- true
+		}()
+
+		// Wait for both routines to finish
+		<-done
+		<-done
+	}
+
+}
+
+func sendRADIUSmessages(config Config) {
 	// Dial a UDP connection.
 	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{
-		IP:   net.IP(serverIP.AsSlice()),
-		Port: destPort,
+		IP:   net.IP(config.Server.AsSlice()),
+		Port: config.DstPort,
 	})
 	if err != nil {
 		fmt.Println(err)
@@ -131,16 +189,6 @@ func main() {
 	}
 	defer conn.Close()
 
-	if sessionId == "" {
-		config.SessionIDPrefix = GenerateRandomString(6)
-	} else {
-		config.SessionIDPrefix = sessionId
-	}
-
-	sendRADIUSmessages(conn, config)
-}
-
-func sendRADIUSmessages(conn *net.UDPConn, config Config) {
 	for i := 0; i < config.NumPackets; i++ {
 		packet := radius.New(radius.CodeAccountingRequest, []byte(config.Secret))
 		username := fmt.Sprintf("%s%08d", config.UsernamePrefix, i)
