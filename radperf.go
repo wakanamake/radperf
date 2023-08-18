@@ -21,35 +21,43 @@ import (
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
+type Config struct {
+	NumPackets      int
+	Secret          string
+	IP4Addr         netip.Addr
+	IP6Net          netip.Prefix
+	Rate            int
+	UsernamePrefix  string
+	MSISDN          int
+	ServicePlan     string
+	SessionIDPrefix string
+	accttype        rfc2866.AcctStatusType
+}
+
 func main() {
 	var (
-		numPackets     int
-		secret         string
-		ip             string
-		ip6prefix      string
-		rate           int
-		destIP         string
-		destPort       int
-		usernamePrefix string
-		msisdn         int
-		start          bool
-		stop           bool
-		servicePlan    string
-		sessionId      string
+		ip4       string
+		ip6       string
+		start     bool
+		stop      bool
+		sessionId string
+		destIP    string
+		destPort  int
+		config    Config
 	)
 
 	// Define the flags
-	flag.IntVar(&numPackets, "n", 1, "Number of packets to send")
-	flag.IntVar(&rate, "r", 1, "Rate of packet transmission (packets per second)")
+	flag.IntVar(&config.NumPackets, "n", 1, "Number of packets to send")
+	flag.IntVar(&config.Rate, "r", 1, "Rate of packet transmission (packets per second)")
 	flag.StringVar(&destIP, "d", "127.0.0.1", "Destination IP address")
 	flag.IntVar(&destPort, "p", 1813, "Destination UDP port")
-	flag.StringVar(&secret, "s", "secret", "RADIUS secret")
-	flag.StringVar(&ip, "i", "192.168.0.1", "Client IP address (Framed-IP-Address Attribute)")
-	flag.StringVar(&ip6prefix, "i6", "fec0::/64", "Client IPv6 prefix (Framed-IPv6-Prefix Attribute)")
-	flag.StringVar(&servicePlan, "sp", "Default Service Plan", "Service Plan name (Class Attribute)")
+	flag.StringVar(&config.Secret, "s", "secret", "RADIUS secret")
+	flag.StringVar(&ip4, "i", "", "Client IP address (Framed-IP-Address Attribute)")
+	flag.StringVar(&ip6, "i6", "", "Client IPv6 prefix (Framed-IPv6-Prefix Attribute)")
+	flag.StringVar(&config.ServicePlan, "sp", "Default Service Plan", "Service Plan name (Class Attribute)")
 	flag.StringVar(&sessionId, "sid", "", "Session ID prefix (Default: random strings)")
-	flag.IntVar(&msisdn, "m", 12345678, "MSISDN (Calling-Station-Id Attribute)")
-	flag.StringVar(&usernamePrefix, "user", "HOGE", "Username prefix")
+	flag.IntVar(&config.MSISDN, "m", 12345678, "MSISDN (Calling-Station-Id Attribute)")
+	flag.StringVar(&config.UsernamePrefix, "user", "HOGE", "Username prefix")
 	flag.BoolVar(&start, "start", false, "Send Accounting START message")
 	flag.BoolVar(&stop, "stop", false, "Send Accounting STOP message")
 
@@ -71,14 +79,27 @@ func main() {
 		return
 	}
 
-	var ip6Net *net.IPNet
+	if ip4 == "" && ip6 == "" {
+		fmt.Println("Error: Either IPv4 or IPv6 address must be specified.")
+		return
+	}
 
-	if ip6prefix != "" {
-		_, ipNet, err := net.ParseCIDR(ip6prefix)
+	if ip6 != "" {
+		ip, err := netip.ParsePrefix(ip6)
 		if err != nil {
+			fmt.Printf("Could not parse IPv6 prefix: %s\n", ip6)
 			return
 		}
-		ip6Net = ipNet
+		config.IP6Net = ip
+	}
+
+	if ip4 != "" {
+		ip, err := netip.ParseAddr(ip4)
+		if err != nil {
+			fmt.Printf("Could not parse IP address: %s\n", ip4)
+			return
+		}
+		config.IP4Addr = ip
 	}
 
 	if !start && !stop {
@@ -86,10 +107,11 @@ func main() {
 		return
 	}
 
-	startIP, err := netip.ParseAddr(ip)
-	if err != nil {
-		fmt.Printf("Could not parse IP address: %s\n", ip)
-		return
+	// Decide Accounting Status Type
+	if start {
+		config.accttype = rfc2866.AcctStatusType_Value_Start
+	} else if stop {
+		config.accttype = rfc2866.AcctStatusType_Value_Stop
 	}
 
 	serverIP, err := netip.ParseAddr(destIP)
@@ -97,16 +119,10 @@ func main() {
 		fmt.Printf("Could not parse IP address: %s\n", destIP)
 		return
 	}
-	//dest := net.ParseIP(serverIP.String())
-	dest := net.IP(serverIP.AsSlice())
-	if dest == nil {
-		fmt.Println("Invalid destination IP address:", destIP)
-		return
-	}
 
 	// Dial a UDP connection.
 	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{
-		IP:   dest,
+		IP:   net.IP(serverIP.AsSlice()),
 		Port: destPort,
 	})
 	if err != nil {
@@ -115,42 +131,43 @@ func main() {
 	}
 	defer conn.Close()
 
-	id := 0
-
-	var sessionIDPrefix string
-
 	if sessionId == "" {
-		sessionIDPrefix = GenerateRandomString(6)
+		config.SessionIDPrefix = GenerateRandomString(6)
 	} else {
-		sessionIDPrefix = sessionId
+		config.SessionIDPrefix = sessionId
 	}
 
-	for i := 0; i < numPackets; i++ {
-		packet := radius.New(radius.CodeAccountingRequest, []byte(secret))
-		username := fmt.Sprintf("%s%08d", usernamePrefix, id)
-		sessionID := fmt.Sprintf("%s%08d", sessionIDPrefix, id)
-		// Attributes
+	sendRADIUSmessages(conn, config)
+}
+
+func sendRADIUSmessages(conn *net.UDPConn, config Config) {
+	for i := 0; i < config.NumPackets; i++ {
+		packet := radius.New(radius.CodeAccountingRequest, []byte(config.Secret))
+		username := fmt.Sprintf("%s%08d", config.UsernamePrefix, i)
+		sessionID := fmt.Sprintf("%s%08d", config.SessionIDPrefix, i)
+
+		// Set Attributes
 		rfc2865.UserName_SetString(packet, username)
 		rfc2866.AcctSessionID_SetString(packet, sessionID)
-		rfc2865.FramedIPAddress_Add(packet, net.IP(startIP.AsSlice()))
-		rfc3162.FramedIPv6Prefix_Add(packet, ip6Net)
-		rfc2865.CallingStationID_SetString(packet, strconv.Itoa(msisdn))
-		rfc2865.Class_SetString(packet, servicePlan)
 
-		if start {
-			rfc2866.AcctStatusType_Add(packet, rfc2866.AcctStatusType_Value_Start)
-		} else if stop {
-			rfc2866.AcctStatusType_Add(packet, rfc2866.AcctStatusType_Value_Stop)
+		if config.IP4Addr.Is4() == true {
+			rfc2865.FramedIPAddress_Add(packet, net.IP(config.IP4Addr.AsSlice()))
+			config.IP4Addr = config.IP4Addr.Next()
 		}
-		sendUDPPacket(conn, packet)
+		if config.IP6Net.Addr().Is6() == true {
+			rfc3162.FramedIPv6Prefix_Add(packet, prefixToIPNet(config.IP6Net))
+			config.IP6Net = incrementIPv6Prefix(config.IP6Net)
+		}
+		rfc2865.CallingStationID_SetString(packet, strconv.Itoa(config.MSISDN))
+		config.MSISDN++
 
-		id++
-		msisdn++
-		startIP = startIP.Next()
-		ip6Net = incrementIPv6Prefix(ip6Net)
+		rfc2865.Class_SetString(packet, config.ServicePlan)
+		rfc2866.AcctStatusType_Add(packet, config.accttype)
+
+		sendUDPPacket(conn, packet)
 	}
 
-	fmt.Println("RADIUS Accounting Start messages sent.")
+	fmt.Println("Sending RADIUS Accounting messages completed.")
 }
 
 func GenerateRandomString(n int) string {
@@ -176,13 +193,21 @@ func sendUDPPacket(conn *net.UDPConn, packet *radius.Packet) {
 	}
 }
 
-func incrementIPv6Prefix(ip6 *net.IPNet) *net.IPNet {
-	ip := ip6.IP
-	prefixSize, _ := ip6.Mask.Size()
+func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
+	ip := prefix.Addr()
+	mask := net.CIDRMask(prefix.Bits(), 128)
+	return &net.IPNet{
+		IP:   net.IP(ip.AsSlice()),
+		Mask: mask,
+	}
+}
+
+func incrementIPv6Prefix(ip6 netip.Prefix) netip.Prefix {
+	prefixSize := ip6.Bits()
 
 	// Convert the IPv6 to a big integer.
 	ipInt := big.NewInt(0)
-	ipInt.SetBytes(ip.To16())
+	ipInt.SetBytes(ip6.Addr().AsSlice())
 
 	// Calculate the number of bits to shift based on the prefix length.
 	shiftBits := 128 - prefixSize
@@ -194,7 +219,12 @@ func incrementIPv6Prefix(ip6 *net.IPNet) *net.IPNet {
 	// Add the increment to the big integer.
 	ipInt.Add(ipInt, increment)
 
-	_, netIP, _ := net.ParseCIDR(net.IP(ipInt.Bytes()).String() + fmt.Sprintf("/%d", prefixSize))
+	// Get netip.Prefix from bytes and prefixsize
+	addr, _ := netip.AddrFromSlice(ipInt.Bytes())
+	ip, err := netip.ParsePrefix(addr.String() + fmt.Sprintf("/%d", prefixSize))
+	if err != nil {
+		log.Fatalf("Could not parse IPv6 prefix: %v", err)
+	}
 
-	return netIP
+	return ip
 }
