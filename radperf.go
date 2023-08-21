@@ -82,32 +82,22 @@ func main() {
 		return
 	}
 
-	if ip4 == "" && ip6 == "" {
+	if len(ip4) != 0 && len(ip6) != 0 {
 		fmt.Println("Error: Either IPv4 or IPv6 address must be specified.")
 		return
 	}
 
-	if threading && (ip4 == "" || ip6 == "") {
+	if threading && (len(ip4) != 0 || len(ip6) != 0) {
 		fmt.Println("Error: Both IPv4 and IPv6 address must be specified.")
 		return
 	}
 
-	if ip6 != "" {
-		ip, err := netip.ParsePrefix(ip6)
-		if err != nil {
-			fmt.Printf("Could not parse IPv6 prefix: %s\n", ip6)
-			return
-		}
-		config.IP6Net = ip
+	if len(ip6) != 0 {
+		config.IP6Net = netip.MustParsePrefix(ip6)
 	}
 
-	if ip4 != "" {
-		ip, err := netip.ParseAddr(ip4)
-		if err != nil {
-			fmt.Printf("Could not parse IP address: %s\n", ip4)
-			return
-		}
-		config.IP4Addr = ip
+	if len(ip4) != 0 {
+		config.IP4Addr = netip.MustParseAddr(ip4)
 	}
 
 	if !start && !stop {
@@ -115,21 +105,16 @@ func main() {
 		return
 	}
 
-	// Decide Accounting Status Type
+	// Get Accounting Status Type
 	if start {
 		config.accttype = rfc2866.AcctStatusType_Value_Start
 	} else if stop {
 		config.accttype = rfc2866.AcctStatusType_Value_Stop
 	}
 
-	server, err := netip.ParseAddr(destinationIP)
-	if err != nil {
-		fmt.Printf("Could not parse IP address: %s\n", destinationIP)
-		return
-	}
-	config.Server = server
+	config.Server = netip.MustParseAddr(destinationIP)
 
-	if sessionId == "" {
+	if len(sessionId) == 0 {
 		config.SessionIDPrefix = GenerateRandomString(6)
 	} else {
 		config.SessionIDPrefix = sessionId
@@ -286,10 +271,7 @@ func incrementIPv6Prefix(ip6 netip.Prefix) netip.Prefix {
 
 	// Get netip.Prefix from bytes and prefixsize
 	addr, _ := netip.AddrFromSlice(ipInt.Bytes())
-	ip, err := netip.ParsePrefix(addr.String() + fmt.Sprintf("/%d", prefixSize))
-	if err != nil {
-		log.Fatalf("Could not parse IPv6 prefix: %v", err)
-	}
+	ip := netip.MustParsePrefix(addr.String() + fmt.Sprintf("/%d", prefixSize))
 
 	return ip
 }
