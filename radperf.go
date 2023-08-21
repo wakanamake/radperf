@@ -189,7 +189,14 @@ func sendRADIUSmessages(config Config) {
 	}
 	defer conn.Close()
 
+	interval := time.Second / time.Duration(config.Rate)
+
 	for i := 0; i < config.NumPackets; i++ {
+
+		// Get time for now
+		startTime := time.Now()
+
+		// Initialize Radius packet
 		packet := radius.New(radius.CodeAccountingRequest, []byte(config.Secret))
 		username := fmt.Sprintf("%s%08d", config.UsernamePrefix, i)
 		sessionID := fmt.Sprintf("%s%08d", config.SessionIDPrefix, i)
@@ -212,7 +219,17 @@ func sendRADIUSmessages(config Config) {
 		rfc2865.Class_SetString(packet, config.ServicePlan)
 		rfc2866.AcctStatusType_Add(packet, config.accttype)
 
+		// Send a Radius packet
 		sendUDPPacket(conn, packet)
+
+		// How much time passed
+		elapsed := time.Since(startTime)
+		// Get time how log to sleep
+		sleepTime := interval - elapsed
+
+		if sleepTime > 0 {
+			time.Sleep(sleepTime)
+		}
 	}
 
 	fmt.Println("Sending RADIUS Accounting messages completed.")
